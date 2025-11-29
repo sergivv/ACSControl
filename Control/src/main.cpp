@@ -2,167 +2,216 @@
 #include <WiFi.h>
 #include "config.h"
 
+// Constantes de Configuración
+const unsigned long MEASUREMENT_INTERVAL = 5000;        // Intervalo entre mediciones (5s)
+const unsigned long DISPLAY_UPDATE_INTERVAL = 1000;     // Actualización pantalla (1s)
+const unsigned long WIFI_CHECK_INTERVAL = 300000;       // Chequeo WiFi (5 min)
+const unsigned long WIFI_CONNECT_TIMEOUT = 30000;       // Timeout conexión WiFi (30s)
 
-// --- Constantes de Configuración ---
-unsigned long lastMeasurementTime = 0;
-unsigned long lastWiFiCheck = 0;
-// Pantalla OLED
+// Configuración LCD OLED
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
 #define OLED_ADDRESS 0x3C
-// WiFi
-const unsigned long WIFI_CHECK_INTERVAL = 300000; // Intervalo chequeo WiFi (5 min)
-const unsigned long WIFI_CONNECT_TIMEOUT = 30000; // Timeout conexión WiFi (30s)
 
-// Configuración OLED
+// Variables Globales
+unsigned long lastMeasurementTime = 0;
+unsigned long lastDisplayUpdate = 0;
+unsigned long lastWiFiCheck = 0;
+bool wifiConnected = false;
+
+// Objeto de configuración OLED
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire);
 
-bool setupOLED()
-{
-  if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDRESS))
-  {
-    Serial.println("Error OLED");
+// --- Prototipos de Funciones ---
+bool setupOLED();
+void connectWiFi();
+void handleWiFi();
+void updateDisplay(float tempC, float tempA, int caldera, int bomba);
+
+// --- Implementación OLED ---
+bool setupOLED() {
+  if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDRESS)) {
+    Serial.println("❌ Error inicializando OLED");
     return false;
   }
   display.clearDisplay();
   display.setTextSize(1);
-  display.setTextColor(WHITE);
+  display.setTextColor(SSD1306_WHITE);
   display.display();
+  Serial.println("✅ OLED inicializado correctamente");
   return true;
 }
 
-void updateDisplay(float tempC, float tempA, int caldera, int bomba)
-{
+void updateDisplay(float tempC, float tempA, int caldera, int bomba) {
   display.clearDisplay(); 
-  display.setTextSize(2);
+  
+  // Encabezado con estado WiFi
+  display.setTextSize(1);
   display.setCursor(0, 0);
-  display.setTextColor(SSD1306_WHITE);
-  display.print(F("Tc: "));
-  display.print(tempC, 1); // Mostrar 1 decimal
-  display.cp437(true); // Habilitar página de códigos 437 para símbolo de grado
-  display.write(167);  // Código para el símbolo de grado '°'
+  display.print("WiFi:");
+  display.println(wifiConnected ? "ON" : "OFF");
+  display.setCursor(50, 0);
+  display.print(WiFi.localIP());
+  display.drawLine(0, 10, 128, 10, SSD1306_WHITE); // Línea separadora
+
+  // Temperaturas
+  display.setTextSize(2);
+  display.setCursor(0, 15);
+  display.print(F("Tc:"));
+  display.print(tempC, 1);
+  display.cp437(true);
+  display.write(167);
   display.print(F("C"));
 
-  display.setCursor(0, 18);
-  display.print(F("Ta: "));
-  display.print(tempA, 1); 
-  display.cp437(true); 
-  display.write(167);  
+  display.setCursor(0, 35);
+  display.print(F("Ta:"));
+  display.print(tempA, 1);
+  display.cp437(true);
+  display.write(167);
   display.print(F("C"));
 
   // Indicadores Caldera/Bomba
-  display.setTextSize(2); 
-  display.setCursor(15, 45);
+  display.setTextSize(1);
+  display.setCursor(15, 55);
   display.print(F("C:"));
-  display.drawCircle(45, 51, 7, SSD1306_WHITE); // Círculo exterior
-  if (caldera != 0)
-  {
-    display.fillCircle(45, 51, 4, SSD1306_WHITE); // Relleno si está ON
-  }
-  else
-  {
-    display.drawCircle(45, 51, 4, SSD1306_WHITE); // Contorno si está OFF
+  display.setCursor(70, 55);
+  display.print(F("B:"));
+
+  // Círculos indicadores
+  display.setTextSize(1);
+  
+  // Caldera
+  display.setCursor(25, 55);
+  display.print(caldera ? "ON " : "OFF");
+  display.drawCircle(50, 57, 6, SSD1306_WHITE);
+  if (caldera) {
+    display.fillCircle(50, 57, 4, SSD1306_WHITE);
   }
 
-  display.setCursor(65, 45);
-  display.print(F("B:"));
-  display.drawCircle(95, 51, 7, SSD1306_WHITE);
-  if (bomba != 0)
-  {
-    display.fillCircle(95, 51, 4, SSD1306_WHITE);
-  }
-  else
-  {
-    display.drawCircle(95, 51, 4, SSD1306_WHITE);
+  // Bomba
+  display.setCursor(80, 55);
+  display.print(bomba ? "ON" : "OFF");
+  display.drawCircle(105, 57, 6, SSD1306_WHITE);
+  if (bomba) {
+    display.fillCircle(105, 57, 4, SSD1306_WHITE);
   }
 
   display.display();
 }
 
 // --- Funciones de Conexión ---
+void connectWiFi() {
+  Serial.println("📡 Iniciando conexión WiFi...");
+  
+  // Configurar IP estática si está definida
+    Serial.print("🔧 Configurando IP estática... ");
+    if (WiFi.config(local_IP, gateway, subnet)) {
+      Serial.println("✅ OK");
+    } else {
+      Serial.println("❌ Fallo, usando DHCP");
+    }
 
-void connectWiFi()
-{
-  Serial.print(F("Configurando IP estática... "));
-  if (!WiFi.config(local_IP, gateway, subnet))
-  {
-    Serial.println(F("Fallo. Usando DHCP..."));
-    // No es necesario hacer nada más, WiFi.begin() usará DHCP si config falla
-  }
-  else
-  {
-    Serial.println(F("OK."));
-  }
-
-  Serial.print(F("Conectando a WiFi: "));
-  Serial.print(ssid);
+  Serial.print("🔌 Conectando a: ");
+  Serial.println(ssid);
+  
   WiFi.begin(ssid, password);
   unsigned long startAttemptTime = millis();
 
-  while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < WIFI_CONNECT_TIMEOUT)
-  {
+  // Conexión con timeout
+  while (WiFi.status() != WL_CONNECTED && 
+         millis() - startAttemptTime < WIFI_CONNECT_TIMEOUT) {
     delay(500);
     Serial.print(".");
   }
-  Serial.println();
 
-  if (WiFi.status() == WL_CONNECTED)
-  {
-    Serial.println(F("WiFi conectado!"));
-    Serial.print(F("IP: "));
+  if (WiFi.status() == WL_CONNECTED) {
+    wifiConnected = true;
+    Serial.println("\n✅ WiFi conectado!");
+    Serial.print("📡 IP: ");
     Serial.println(WiFi.localIP());
 
+    // Mostrar en OLED
     display.clearDisplay();
-    display.println(F("WiFi conectado!"));
-    display.print(F("IP: "));
+    display.setTextSize(1);
+    display.setCursor(0, 0);
+    display.println("WiFi Conectado");
+    display.print("IP: ");
     display.println(WiFi.localIP());
     display.display();
-  }
-  else
-  {
-    Serial.println(F("No se pudo conectar a Wi-Fi. Reiniciando..."));
-    delay(1000);
-    ESP.restart();
+    delay(2000); // Mostrar mensaje 2 segundos
+  } else {
+    wifiConnected = false;
+    Serial.println("\n❌ Fallo conexión WiFi");
+    
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setCursor(0, 0);
+    display.println("WiFi Fallo");
+    display.println("Modo offline");
+    display.display();
+    delay(2000);
   }
 }
 
-void handleWiFi()
-{
-  if (millis() - lastWiFiCheck >= WIFI_CHECK_INTERVAL)
-  {
+void handleWiFi() {
+  if (millis() - lastWiFiCheck >= WIFI_CHECK_INTERVAL) {
     lastWiFiCheck = millis();
-    if (WiFi.status() != WL_CONNECTED)
-    {
-      Serial.println(F("WiFi desconectado. Intentando reconectar..."));
+    
+    if (WiFi.status() != WL_CONNECTED) {
+      wifiConnected = false;
+      Serial.println("🔌 WiFi desconectado. Reconectando...");
+      
       display.clearDisplay();
       display.setCursor(0, 0);
-      display.println(F("Reconectando WiFi.."));
+      display.println("Reconectando WiFi...");
       display.display();
+      
       WiFi.disconnect();
-      delay(100);
-      WiFi.reconnect();
-      lastWiFiCheck = millis();
+      delay(1000);
+      connectWiFi();
+    } else {
+      wifiConnected = true;
     }
   }
 }
 
-void setup()
-{
+// --- Setup y Loop Principal ---
+void setup() {
   Serial.begin(115200);
-  Serial.println(F("\n\nInicializando ESP32..."));
+  delay(1000); // Esperar estabilización
+  Serial.println(F("\n🔥 Sistema Control Calefacción 🔥"));
+  Serial.println(F("Inicializando..."));
 
-  if (!setupOLED())
+  // Inicializar OLED
+  if (!setupOLED()) {
+    Serial.println("❌ Fallo crítico OLED. Reiniciando...");
+    delay(2000);
     ESP.restart();
+  }
 
+  // Mostrar mensaje de bienvenida
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setCursor(0, 0);
+  display.println("Control Calefaccion");
+  display.println("Inicializando...");
+  display.display();
+  delay(2000);
+
+  // Conectar WiFi
   connectWiFi();
-  Serial.println(F("Setup completado."));
-  lastMeasurementTime = millis(); // Iniciar timers
+
+  // Inicializar timers
+  lastMeasurementTime = millis();
+  lastDisplayUpdate = millis();
   lastWiFiCheck = millis();
+
+  Serial.println(F("✅ Sistema inicializado correctamente"));
 }
 
 void loop()
 {
   handleWiFi();
-  updateDisplay(23.5, 32.6, 1, 0);
+  updateDisplay(23.5, 32.6, 0, 1);
   delay(1000);
 }
